@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <title>Minecraft JS: Texture Update</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Segoe UI', sans-serif; }
+        canvas { display: block; }
+
+        /* UI Екрани */
+        .screen { 
+            position: absolute; width: 100%; height: 100%; background: rgba(0,0,0,0.85);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            color: white; z-index: 100;
+        }
+        
+        button {
+            padding: 15px 50px; font-size: 22px; cursor: pointer;
+            background: #5a9e45; color: white; border: 4px solid #2d5023; outline: none;
+            transition: 0.2s;
+        }
+        button:hover { background: #6dbd54; transform: scale(1.05); }
+
+        /* Приціл */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            margin: -10px; color: white; font-size: 24px; pointer-events: none; z-index: 10;
+        }
+
+        /* Хотбар */
+        #hotbar {
+            position: absolute; bottom: 15px; left: 50%; transform: translateX(-50%);
+            display: flex; gap: 8px; background: rgba(0,0,0,0.6); padding: 8px;
+            border: 2px solid #333; z-index: 50;
+        }
+        .slot {
+            width: 50px; height: 50px; border: 3px solid #555;
+            background: rgba(255,255,255,0.05); display: flex;
+            align-items: center; justify-content: center; position: relative;
+        }
+        .slot.active { border-color: #fff; background: rgba(255,255,255,0.2); }
+        .slot-count { position: absolute; bottom: 2px; right: 4px; color: white; font-size: 12px; text-shadow: 1px 1px 1px #000; }
+        .icon { width: 32px; height: 32px; image-rendering: pixelated; background-size: cover; }
+    </style>
+</head>
+<body>
+
+    <div id="main-menu" class="screen">
+        <h1>MINECRAFT JS</h1>
+        <p style="color: #aaa;">Переконайтеся, що текстури лежать у папці з грою</p>
+        <button onclick="startGame()">ГРАТИ</button>
+    </div>
+
+    <div id="loading-screen" class="screen" style="display:none;">
+        <h1>Світ генерується...</h1>
+    </div>
+
+    <div id="inventory-ui" class="screen" style="display:none;">
+        <h2>ІНВЕНТАР (E)</h2>
+        <p>Використовуйте 1-3 для вибору блоків</p>
+        <button onclick="toggleInventory()">ЗАКРИТИ</button>
+    </div>
+
+    <div id="crosshair">+</div>
+
+    <div id="hotbar">
+        <div class="slot active" id="slot-0"><div class="icon" id="icon-0" style="background-color:#6b4a3a;"></div><span class="slot-count" id="count-0">0</span></div>
+        <div class="slot" id="slot-1"><div class="icon" id="icon-1" style="background-color:#777;"></div><span class="slot-count" id="count-1">0</span></div>
+        <div class="slot" id="slot-2"><div class="icon" id="icon-2" style="background-color:#5a3e2b;"></div><span class="slot-count" id="count-2">0</span></div>
+        <div class="slot" id="slot-3"></div><div class="slot" id="slot-4"></div><div class="slot" id="slot-5"></div>
+        <div class="slot" id="slot-6"></div><div class="slot" id="slot-7"></div><div class="slot" id="slot-8"></div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- Ініціалізація сцени ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87CEEB);
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: false }); // False для піксельного вигляду
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Освітлення
+        scene.add(new THREE.AmbientLight(0xffffff, 1.2)); 
+        const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+        sun.position.set(15, 50, 15);
+        scene.add(sun);
+
+        // --- Текстури та Матеріали ---
+        const loader = new THREE.TextureLoader();
+        function loadTex(file) {
+            const t = loader.load(file, 
+                undefined, 
+                undefined, 
+                err => console.error("Помилка завантаження текстури:", file)
+            );
+            t.magFilter = THREE.NearestFilter; // Чіткі пікселі
+            t.minFilter = THREE.NearestFilter;
+            return t;
+        }
+
+        const textures = {
+            grass: loadTex('grass.png'),
+            dirt: loadTex('dirt.png'),
+            stone: loadTex('stone.png'),
+            wood: loadTex('wood.png')
+        };
+
+        const mats = {
+            grass: new THREE.MeshStandardMaterial({ map: textures.grass }),
+            dirt: new THREE.MeshStandardMaterial({ map: textures.dirt }),
+            stone: new THREE.MeshStandardMaterial({ map: textures.stone }),
+            wood: new THREE.MeshStandardMaterial({ map: textures.wood })
+        };
+
+        // Встановлюємо іконки в хотбарі
+        document.getElementById('icon-0').style.backgroundImage = "url('dirt.png')";
+        document.getElementById('icon-1').style.backgroundImage = "url('stone.png')";
+        document.getElementById('icon-2').style.backgroundImage = "url('wood.png')";
+
+        // --- Дані світу ---
+        const worldData = new Map();
+        const instMeshes = {};
+        const drops = [];
+        const geo = new THREE.BoxGeometry(1, 1, 1);
+        const blockTypes = ['dirt', 'stone', 'wood']; 
+        let selectedSlot = 0;
+        let inventory = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+        // --- Функції ---
+        window.startGame = function() {
+            document.getElementById('main-menu').style.display = 'none';
+            document.getElementById('loading-screen').style.display = 'flex';
+            setTimeout(() => {
+                generateWorld();
+                document.getElementById('loading-screen').style.display = 'none';
+                controls.lock();
+            }, 100);
+        };
+
+        function generateWorld() {
+            const radius = 50; 
+            for (let x = -radius; x < radius; x++) {
+                for (let z = -radius; z < radius; z++) {
+                    const h = Math.floor(Math.sin(x*0.1) * Math.cos(z*0.1) * 3 + 2);
+                    for (let y = -1; y <= h; y++) {
+                        let type = (y === h) ? 'grass' : (y < h - 2 ? 'stone' : 'dirt');
+                        worldData.set(`${x},${y},${z}`, type);
+                    }
+                }
+            }
+            updateVisuals();
+        }
+
+        function updateVisuals() {
+            Object.values(instMeshes).forEach(m => scene.remove(m));
+            const positions = { grass: [], dirt: [], stone: [], wood: [] };
+
+            worldData.forEach((type, key) => {
+                const p = key.split(',').map(Number);
+                if (positions[type]) positions[type].push(p[0], p[1], p[2]);
+            });
+
+            Object.keys(positions).forEach(type => {
+                const count = positions[type].length / 3;
+                if (count === 0) return;
+                const mesh = new THREE.InstancedMesh(geo, mats[type], count);
+                const d = new THREE.Object3D();
+                for (let i = 0; i < count; i++) {
+                    d.position.set(positions[type][i*3], positions[type][i*3+1], positions[type][i*3+2]);
+                    d.updateMatrix();
+                    mesh.setMatrixAt(i, d.matrix);
+                }
+                instMeshes[type] = mesh;
+                scene.add(mesh);
+            });
+        }
+
+        // --- Гравець та Фізика ---
+        const controls = new PointerLockControls(camera, document.body);
+        const keys = { w: false, s: false, a: false, d: false };
+        let velY = 0;
+        let onGround = false;
+
+        function checkBlock(x,y,z) { return worldData.has(`${Math.round(x)},${Math.round(y)},${Math.round(z)}`); }
+
+        function isColliding(pos) {
+            // Перевірка 3-х рівнів (ноги, живіт, голова) для зросту 2 блоки
+            for (let dy of [-0.9, 0, 0.8]) { 
+                for (let dx of [-0.3, 0.3]) {
+                    for (let dz of [-0.3, 0.3]) {
+                        if (checkBlock(pos.x+dx, pos.y+dy-1, pos.z+dz)) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        // --- Взаємодія ---
+        const highlight = new THREE.Mesh(new THREE.BoxGeometry(1.02, 1.02, 1.02), new THREE.MeshBasicMaterial({color: 0xffffff, transparent: true, opacity: 0.3}));
+        scene.add(highlight);
+        const raycaster = new THREE.Raycaster();
+
+        window.addEventListener('mousedown', (e) => {
+            if (!controls.isLocked) return;
+            raycaster.setFromCamera(new THREE.Vector2(), camera);
+            const targets = Object.values(instMeshes).filter(m => m !== undefined);
+            const intersects = raycaster.intersectObjects(targets);
+
+            if (intersects.length > 0 && intersects[0].distance <= 4) {
+                const mesh = intersects[0].object;
+                const matrix = new THREE.Matrix4();
+                mesh.getMatrixAt(intersects[0].instanceId, matrix);
+                const pos = new THREE.Vector3().setFromMatrixPosition(matrix);
+
+                if (e.button === 0) { // Ламання (ЛКМ)
+                    const type = worldData.get(`${pos.x},${pos.y},${pos.z}`);
+                    worldData.delete(`${pos.x},${pos.y},${pos.z}`);
+                    spawnDrop(pos, type);
+                    updateVisuals();
+                } else if (e.button === 2) { // Ставлення (ПКМ)
+                    const n = intersects[0].face.normal;
+                    const newPos = pos.clone().add(n);
+                    
+                    // Перевірка "не в собі"
+                    const px = Math.round(camera.position.x);
+                    const pz = Math.round(camera.position.z);
+                    const py1 = Math.round(camera.position.y);
+                    const py2 = Math.round(camera.position.y - 1);
+
+                    const canPlace = inventory[selectedSlot] > 0 && 
+                                   !(newPos.x === px && newPos.z === pz && (newPos.y === py1 || newPos.y === py2));
+
+                    if (canPlace) {
+                        worldData.set(`${newPos.x},${newPos.y},${newPos.z}`, blockTypes[selectedSlot] || 'dirt');
+                        inventory[selectedSlot]--;
+                        updateUI();
+                        updateVisuals();
+                    }
+                }
+            }
+        });
+
+        function spawnDrop(pos, type) {
+            if (type === 'grass') type = 'dirt'; // Трава випадає як земля
+            const d = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.25, 0.25), mats[type]);
+            d.position.copy(pos);
+            d.userData = { type, v: new THREE.Vector3((Math.random()-0.5)*0.1, 0.15, (Math.random()-0.5)*0.1) };
+            scene.add(d);
+            drops.push(d);
+        }
+
+        function updateUI() {
+            for(let i=0; i<9; i++) {
+                const el = document.getElementById(`count-${i}`);
+                if (el) el.innerText = inventory[i] > 0 ? inventory[i] : "";
+            }
+        }
+
+        // --- Ввід ---
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'KeyW') keys.w = true;
+            if (e.code === 'KeyS') keys.s = true;
+            if (e.code === 'KeyA') keys.a = true;
+            if (e.code === 'KeyD') keys.d = true;
+            if (e.code === 'Space' && onGround) velY = 6;
+            if (e.code === 'KeyE') toggleInventory();
+            if (e.code.startsWith('Digit')) {
+                const n = parseInt(e.code.replace('Digit','')) - 1;
+                if (n >= 0 && n <= 8) {
+                    document.getElementById(`slot-${selectedSlot}`).classList.remove('active');
+                    selectedSlot = n;
+                    document.getElementById(`slot-${selectedSlot}`).classList.add('active');
+                }
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'KeyW') keys.w = false; if (e.code === 'KeyS') keys.s = false;
+            if (e.code === 'KeyA') keys.a = false; if (e.code === 'KeyD') keys.d = false;
+        });
+
+        window.toggleInventory = function() {
+            if (controls.isLocked) {
+                controls.unlock();
+                document.getElementById('inventory-ui').style.display = 'flex';
+            } else {
+                controls.lock();
+                document.getElementById('inventory-ui').style.display = 'none';
+            }
+        };
+
+        // --- Основний цикл ---
+        let lastTime = performance.now();
+        camera.position.set(0, 10, 0);
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = performance.now();
+            const delta = Math.min((time - lastTime) / 1000, 0.1);
+            lastTime = time;
+
+            if (controls.isLocked) {
+                // Плавний рух
+                const dir = new THREE.Vector3(Number(keys.d)-Number(keys.a), 0, Number(keys.w)-Number(keys.s)).normalize();
+                const forward = new THREE.Vector3(0,0,-1).applyQuaternion(camera.quaternion); forward.y = 0; forward.normalize();
+                const right = new THREE.Vector3(1,0,0).applyQuaternion(camera.quaternion); right.y = 0; right.normalize();
+                const m = new THREE.Vector3().addScaledVector(forward, dir.z).addScaledVector(right, dir.x).multiplyScalar(4 * delta);
+
+                const ox = camera.position.x; camera.position.x += m.x;
+                if (isColliding(camera.position)) camera.position.x = ox;
+                const oz = camera.position.z; camera.position.z += m.z;
+                if (isColliding(camera.position)) camera.position.z = oz;
+
+                // Гравітація
+                velY -= 15 * delta;
+                camera.position.y += velY * delta;
+                onGround = false;
+                if (isColliding(camera.position)) {
+                    if (velY < 0) onGround = true;
+                    camera.position.y -= velY * delta;
+                    velY = 0;
+                }
+
+                // Вибір блоку
+                raycaster.setFromCamera(new THREE.Vector2(), camera);
+                const targets = Object.values(instMeshes).filter(m => m !== undefined);
+                const ints = raycaster.intersectObjects(targets);
+                if (ints.length > 0 && ints[0].distance <= 4) {
+                    const m = new THREE.Matrix4();
+                    ints[0].object.getMatrixAt(ints[0].instanceId, m);
+                    highlight.position.setFromMatrixPosition(m);
+                    highlight.visible = true;
+                } else highlight.visible = false;
+
+                // Підбір предметів
+                for(let i = drops.length - 1; i >= 0; i--) {
+                    const d = drops[i];
+                    d.position.add(d.userData.v); d.userData.v.y -= 0.005; d.rotation.y += 0.05;
+                    if (camera.position.distanceTo(d.position) < 1.4) {
+                        const type = d.userData.type;
+                        const idx = (type === 'stone') ? 1 : (type === 'wood' ? 2 : 0);
+                        inventory[idx]++;
+                        updateUI(); scene.remove(d); drops.splice(i, 1);
+                    }
+                }
+            }
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('contextmenu', e => e.preventDefault());
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
